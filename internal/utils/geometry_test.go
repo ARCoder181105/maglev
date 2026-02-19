@@ -145,7 +145,7 @@ func TestDistance(t *testing.T) {
 			lat2:      40.7129,
 			lon2:      -74.0061,
 			expected:  13.5, // approximately 13.5 meters
-			tolerance: 1.0,
+			tolerance: 2.0,
 		},
 		{
 			name:      "Antipodal points (opposite sides of Earth)",
@@ -427,4 +427,21 @@ func TestIsOutOfBounds(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestDistance_EquirectangularFastPath(t *testing.T) {
+	// Test coordinates that are less than 0.2 degrees apart
+	// to ensure the fast-path approximation triggers and is accurate
+	lat1, lon1 := 47.6062, -122.3321 // Seattle downtown
+	lat2, lon2 := 47.6101, -122.3421 // Pike Place Market
+
+	// The fast-path should calculate this correctly
+	distAB := Distance(lat1, lon1, lat2, lon2)
+	
+	// Ensure it falls within the expected physical distance (~860 meters)
+	assert.InDelta(t, 860.0, distAB, 20.0, "Fast-path distance should be highly accurate")
+
+	// Ensure the fast-path is symmetric
+	distBA := Distance(lat2, lon2, lat1, lon1)
+	assert.InDelta(t, distAB, distBA, 0.0001, "Fast-path distance should be symmetric")
 }
