@@ -54,7 +54,8 @@ func TestRateLimitMiddleware_CleanupKeepsActiveClients(t *testing.T) {
 	threshold := 10 * time.Minute
 	for key, client := range middleware.limiters {
 		if !middleware.exemptKeys[key] {
-			if now.Sub(client.lastSeen) > threshold {
+			lastSeenTime := time.Unix(0, client.lastSeen.Load())
+			if now.Sub(lastSeenTime) > threshold {
 				delete(middleware.limiters, key)
 			}
 		}
@@ -100,7 +101,8 @@ func TestRateLimitMiddleware_CleanupRemovesInactiveClients(t *testing.T) {
 	threshold := 10 * time.Minute
 	for key, client := range middleware.limiters {
 		if !middleware.exemptKeys[key] {
-			if now.Sub(client.lastSeen) > threshold {
+			lastSeenTime := time.Unix(0, client.lastSeen.Load())
+			if now.Sub(lastSeenTime) > threshold {
 				delete(middleware.limiters, key)
 			}
 		}
@@ -155,7 +157,8 @@ func TestRateLimitMiddleware_CleanupHandlesExhaustedLimiters(t *testing.T) {
 	threshold := 10 * time.Minute
 	for key, client := range middleware.limiters {
 		if !middleware.exemptKeys[key] {
-			if now.Sub(client.lastSeen) > threshold {
+			lastSeenTime := time.Unix(0, client.lastSeen.Load())
+			if now.Sub(lastSeenTime) > threshold {
 				delete(middleware.limiters, key)
 			}
 		}
@@ -209,7 +212,8 @@ func TestRateLimitMiddleware_CleanupMemoryLeakPrevention(t *testing.T) {
 	threshold := 10 * time.Minute
 	for key, client := range middleware.limiters {
 		if !middleware.exemptKeys[key] {
-			if now.Sub(client.lastSeen) > threshold {
+			lastSeenTime := time.Unix(0, client.lastSeen.Load())
+			if now.Sub(lastSeenTime) > threshold {
 				delete(middleware.limiters, key)
 			}
 		}
@@ -231,10 +235,9 @@ func TestRateLimitMiddleware_CleanupPreservesExemptedKeys(t *testing.T) {
 
 	// Manually add an exempted key to the limiters map
 	middleware.mu.Lock()
-	middleware.limiters["org.onebusaway.iphone"] = &rateLimitClient{
-		limiter:  nil,                                    // Not needed for this test
-		lastSeen: mockClock.Now().Add(-20 * time.Minute), // Very old
-	}
+	exemptClient := &rateLimitClient{limiter: nil}
+	exemptClient.lastSeen.Store(mockClock.Now().Add(-20 * time.Minute).UnixNano())
+	middleware.limiters["org.onebusaway.iphone"] = exemptClient
 	middleware.mu.Unlock()
 
 	// Advance time
@@ -246,7 +249,8 @@ func TestRateLimitMiddleware_CleanupPreservesExemptedKeys(t *testing.T) {
 	threshold := 10 * time.Minute
 	for key, client := range middleware.limiters {
 		if !middleware.exemptKeys[key] {
-			if now.Sub(client.lastSeen) > threshold {
+			lastSeenTime := time.Unix(0, client.lastSeen.Load())
+			if now.Sub(lastSeenTime) > threshold {
 				delete(middleware.limiters, key)
 			}
 		}
@@ -277,7 +281,8 @@ func TestRateLimitMiddleware_LastSeenUpdateOnEveryRequest(t *testing.T) {
 	limitedHandler.ServeHTTP(w, req)
 
 	middleware.mu.RLock()
-	firstSeen := middleware.limiters["timestamp-test"].lastSeen
+	firstSeenNano := middleware.limiters["timestamp-test"].lastSeen.Load()
+	firstSeen := time.Unix(0, firstSeenNano)
 	middleware.mu.RUnlock()
 
 	// Advance time by 2 minutes
@@ -289,7 +294,8 @@ func TestRateLimitMiddleware_LastSeenUpdateOnEveryRequest(t *testing.T) {
 	limitedHandler.ServeHTTP(w, req)
 
 	middleware.mu.RLock()
-	secondSeen := middleware.limiters["timestamp-test"].lastSeen
+	secondSeenNano := middleware.limiters["timestamp-test"].lastSeen.Load()
+	secondSeen := time.Unix(0, secondSeenNano)
 	middleware.mu.RUnlock()
 
 	// Verify lastSeen was updated

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -17,7 +18,7 @@ import (
 // This allows us to remove inactive users without disrupting active ones.
 type rateLimitClient struct {
 	limiter  *rate.Limiter
-	lastSeen time.Time
+	lastSeen atomic.Int64
 }
 
 // RateLimitMiddleware provides per-API-key rate limiting
@@ -80,21 +81,32 @@ func (rl *RateLimitMiddleware) Handler() func(http.Handler) http.Handler {
 // getLimiter gets or creates a rate limiter for the given API key
 // and updates the last usage timestamp.
 func (rl *RateLimitMiddleware) getLimiter(apiKey string) *rate.Limiter {
+	// If the client exists, update lastSeen and return using only a Read Lock.
+	rl.mu.RLock()
+	if client, exists := rl.limiters[apiKey]; exists {
+		client.lastSeen.Store(rl.clock.Now().UnixNano())
+		rl.mu.RUnlock()
+		return client.limiter
+	}
+	rl.mu.RUnlock()
+
+	// Client does not exist, acquire a full Write Lock to create it.
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	// If the client exists, update the lastSeen time and return the limiter
+	// another goroutine might have created it while we were waiting for the lock.
 	if client, exists := rl.limiters[apiKey]; exists {
-		client.lastSeen = rl.clock.Now()
+		client.lastSeen.Store(rl.clock.Now().UnixNano())
 		return client.limiter
 	}
 
 	// Create new limiter and wrap it in our client struct
 	limiter := rate.NewLimiter(rl.rateLimit, rl.burstSize)
-	rl.limiters[apiKey] = &rateLimitClient{
-		limiter:  limiter,
-		lastSeen: rl.clock.Now(),
+	newClient := &rateLimitClient{
+		limiter: limiter,
 	}
+	newClient.lastSeen.Store(rl.clock.Now().UnixNano())
+	rl.limiters[apiKey] = newClient
 
 	return limiter
 }
@@ -189,7 +201,8 @@ func (rl *RateLimitMiddleware) cleanup() {
 				if !rl.exemptKeys[key] {
 					// using Time-Based Eviction (LRU)
 					// only delete if the client hasn't been seen in 10 minutes.
-					if now.Sub(client.lastSeen) > threshold {
+					lastSeenTime := time.Unix(0, client.lastSeen.Load())
+					if now.Sub(lastSeenTime) > threshold {
 						delete(rl.limiters, key)
 					}
 				}
