@@ -22,7 +22,7 @@ const (
 
 // AdvancedDirectionCalculator implements the OneBusAway Java algorithm for stop direction calculation
 type AdvancedDirectionCalculator struct {
-	queries           *gtfsdb.Queries
+	queriesProvider   func() *gtfsdb.Queries
 	varianceThreshold float64
 	contextCache      map[string][]gtfsdb.GetStopsWithShapeContextRow   // Cache of stop shape context data
 	shapeCache        map[string][]gtfsdb.GetShapePointsWithDistanceRow // Cache of all shape data for bulk operations
@@ -33,9 +33,34 @@ type AdvancedDirectionCalculator struct {
 // NewAdvancedDirectionCalculator creates a new advanced direction calculator
 func NewAdvancedDirectionCalculator(queries *gtfsdb.Queries) *AdvancedDirectionCalculator {
 	return &AdvancedDirectionCalculator{
-		queries:           queries,
+		queriesProvider:   func() *gtfsdb.Queries { return queries },
 		varianceThreshold: defaultVarianceThreshold,
 	}
+}
+
+// NewAdvancedDirectionCalculatorWithManager creates a new advanced direction calculator that automatically resolves queries from the manager
+func NewAdvancedDirectionCalculatorWithManager(manager *Manager) *AdvancedDirectionCalculator {
+	return &AdvancedDirectionCalculator{
+		queriesProvider: func() *gtfsdb.Queries {
+			if manager == nil {
+				return nil
+			}
+			manager.RLock()
+			defer manager.RUnlock()
+			if manager.GtfsDB != nil {
+				return manager.GtfsDB.Queries
+			}
+			return nil
+		},
+		varianceThreshold: defaultVarianceThreshold,
+	}
+}
+
+func (adc *AdvancedDirectionCalculator) getQueries() *gtfsdb.Queries {
+	if adc.queriesProvider != nil {
+		return adc.queriesProvider()
+	}
+	return nil
 }
 
 // SetVarianceThreshold sets the standard deviation threshold for direction variance checking.
@@ -150,7 +175,12 @@ func (adc *AdvancedDirectionCalculator) computeFromShapes(ctx context.Context, s
 	// Use cache if available, otherwise hit DB
 	if !hasCache {
 		var err error
-		stopTrips, err = adc.queries.GetStopsWithShapeContext(ctx, stopID)
+		queries := adc.getQueries()
+		if queries == nil {
+			slog.Warn("queries provider returned nil", slog.String("stopID", stopID))
+			return ""
+		}
+		stopTrips, err = queries.GetStopsWithShapeContext(ctx, stopID)
 		if err != nil {
 			slog.Warn("failed to get stop shape context",
 				slog.String("stopID", stopID),
@@ -290,7 +320,11 @@ func (adc *AdvancedDirectionCalculator) calculateOrientationAtStop(ctx context.C
 		}
 	} else {
 		// Fall back to database query if no cache
-		shapePoints, err = adc.queries.GetShapePointsWithDistance(ctx, shapeID)
+		queries := adc.getQueries()
+		if queries == nil {
+			return 0, sql.ErrNoRows
+		}
+		shapePoints, err = queries.GetShapePointsWithDistance(ctx, shapeID)
 		if err != nil || len(shapePoints) < 2 {
 			return 0, err
 		}

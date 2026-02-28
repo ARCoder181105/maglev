@@ -607,3 +607,42 @@ func TestBulkQuery_GetShapePointsByIDs(t *testing.T) {
 	}
 	assert.True(t, isSorted, "Shape points should be returned in sequence order")
 }
+
+func TestDirectionCalculator_HotSwapResolution(t *testing.T) {
+	gtfsConfig := Config{
+		GtfsURL:      models.GetFixturePath(t, "raba.zip"),
+		GTFSDataPath: ":memory:",
+	}
+	manager, err := InitGTFSManager(gtfsConfig)
+	assert.NoError(t, err)
+	defer manager.Shutdown()
+
+	// Create calculator WITH the manager
+	calc := NewAdvancedDirectionCalculatorWithManager(manager)
+
+	// Verify it can get queries initially
+	queries1 := calc.getQueries()
+	assert.NotNil(t, queries1)
+	assert.Equal(t, manager.GtfsDB.Queries, queries1)
+
+	// Save the old DB reference
+	oldQueries := manager.GtfsDB.Queries
+
+	// Create a dummy DB connection so the deferred manager.Shutdown() doesn't panic
+	dummyDB, err := sql.Open("sqlite3", ":memory:")
+	assert.NoError(t, err)
+
+	// Simulate a hot swap by assigning a new mock client/queries object
+	manager.staticMutex.Lock()
+	manager.GtfsDB = &gtfsdb.Client{
+		DB:      dummyDB,
+		Queries: &gtfsdb.Queries{}, // New dummy queries object representing the new DB
+	}
+	manager.staticMutex.Unlock()
+
+	// Verify the calculator dynamically returns the NEW queries object
+	queries2 := calc.getQueries()
+	assert.NotNil(t, queries2)
+	assert.NotEqual(t, oldQueries, queries2, "Calculator should not hold the stale DB reference")
+	assert.Equal(t, manager.GtfsDB.Queries, queries2, "Calculator should return the new DB reference")
+}
