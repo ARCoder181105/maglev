@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3" // CGo-based SQLite driver
+	_ "modernc.org/sqlite" // Pure Go SQLite driver
 )
 
 // Client is the main entry point for the library
