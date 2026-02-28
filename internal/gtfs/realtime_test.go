@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/OneBusAway/go-gtfs"
 	"github.com/stretchr/testify/assert"
@@ -285,4 +286,59 @@ func TestEnabledFeeds(t *testing.T) {
 			assert.Equal(t, tt.wantIDs, gotIDs)
 		})
 	}
+}
+
+func TestClearFeedData(t *testing.T) {
+	manager := &Manager{
+		realTimeMutex: sync.RWMutex{},
+		feedTrips: map[string][]gtfs.Trip{
+			"test_feed": {{ID: gtfs.TripID{ID: "trip1"}}},
+		},
+		feedVehicles: map[string][]gtfs.Vehicle{
+			"test_feed": {{ID: &gtfs.VehicleID{ID: "veh1"}}},
+		},
+		feedAlerts: map[string][]gtfs.Alert{
+			"test_feed": {{ID: "alert1"}},
+		},
+	}
+
+	// Warm up realTime lookup array cache
+	manager.rebuildMergedRealtimeLocked()
+	assert.Len(t, manager.GetRealTimeTrips(), 1, "Should have 1 trip initially")
+
+	// Trigger the clearing mechanism
+	manager.clearFeedData("test_feed")
+
+	assert.Empty(t, manager.feedTrips["test_feed"], "feedTrips should be empty after clearing")
+	assert.Empty(t, manager.feedVehicles["test_feed"], "feedVehicles should be empty after clearing")
+	assert.Empty(t, manager.feedAlerts["test_feed"], "feedAlerts should be empty after clearing")
+	assert.Len(t, manager.GetRealTimeTrips(), 0, "Global trip lookup should be empty")
+	assert.Len(t, manager.GetRealTimeVehicles(), 0, "Global vehicle lookup should be empty")
+}
+
+func TestUpdateFeedRealtime_ReturnsFalseOnFailure(t *testing.T) {
+	// Setup a server that always returns 500 error simulating an outage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	manager := &Manager{
+		realTimeMutex:       sync.RWMutex{},
+		feedTrips:           make(map[string][]gtfs.Trip),
+		feedVehicles:        make(map[string][]gtfs.Vehicle),
+		feedAlerts:          make(map[string][]gtfs.Alert),
+		feedVehicleLastSeen: make(map[string]map[string]time.Time),
+	}
+
+	cfg := RTFeedConfig{
+		ID:                  "fail-feed",
+		TripUpdatesURL:      server.URL,
+		VehiclePositionsURL: server.URL,
+		ServiceAlertsURL:    server.URL,
+	}
+
+	hasNewData := manager.updateFeedRealtime(context.Background(), cfg)
+	
+	assert.False(t, hasNewData, "Should return false when all fetches fail")
 }

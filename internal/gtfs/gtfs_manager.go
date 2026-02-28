@@ -12,6 +12,7 @@ import (
 
 	"maglev.onebusaway.org/gtfsdb"
 	"maglev.onebusaway.org/internal/utils"
+	"maglev.onebusaway.org/internal/metrics"
 
 	"github.com/OneBusAway/go-gtfs"
 	_ "github.com/mattn/go-sqlite3" // CGo-based SQLite driver
@@ -63,6 +64,26 @@ type Manager struct {
 	feedAlerts   map[string][]gtfs.Alert
 	// Per-feed, per-vehicle last-seen timestamps for stale vehicle expiry
 	feedVehicleLastSeen map[string]map[string]time.Time // feedID -> vehicleID -> lastSeen
+
+	// Exported metrics client dependency
+	Metrics *metrics.Metrics
+}
+
+// SetMetrics injects the Prometheus metrics client
+func (manager *Manager) SetMetrics(m *metrics.Metrics) {
+	manager.Metrics = m
+}
+
+// clearFeedData removes stale data for a specific feed when the staleness threshold is crossed
+func (manager *Manager) clearFeedData(feedID string) {
+	manager.realTimeMutex.Lock()
+	defer manager.realTimeMutex.Unlock()
+
+	manager.feedTrips[feedID] = nil
+	manager.feedVehicles[feedID] = nil
+	manager.feedAlerts[feedID] = nil
+
+	manager.rebuildMergedRealtimeLocked()
 }
 
 // IsReady returns true if the GTFS data is fully initialized and indexed.
