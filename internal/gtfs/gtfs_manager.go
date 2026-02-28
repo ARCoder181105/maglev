@@ -80,9 +80,47 @@ func (manager *Manager) MarkReady() {
 func InitGTFSManager(config Config) (*Manager, error) {
 	isLocalFile := !strings.HasPrefix(config.GtfsURL, "http://") && !strings.HasPrefix(config.GtfsURL, "https://")
 
-	staticData, err := loadGTFSData(config.GtfsURL, isLocalFile, config)
-	if err != nil {
-		return nil, err
+	logger := slog.Default().With(slog.String("component", "gtfs_manager"))
+
+	var staticData *gtfs.Static
+	var gtfsDB *gtfsdb.Client
+	var err error
+
+	// Define retry policy: 5 attempts total (1 initial + 4 retries)
+	backoffs := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second}
+	maxAttempts := len(backoffs) + 1
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Attempt to load in-memory static data if we haven't already succeeded
+		if staticData == nil {
+			staticData, err = loadGTFSData(config.GtfsURL, isLocalFile, config)
+			if err != nil {
+				if attempt < maxAttempts {
+					delay := backoffs[attempt-1]
+					logging.LogError(logger, fmt.Sprintf("Failed to load GTFS static data (attempt %d/%d). Retrying in %v...", attempt, maxAttempts, delay), err)
+					time.Sleep(delay)
+					continue
+				}
+				return nil, fmt.Errorf("failed to load GTFS data after %d attempts: %w", maxAttempts, err)
+			}
+		}
+
+		// Attempt to build the SQLite DB if we haven't already succeeded
+		if gtfsDB == nil {
+			gtfsDB, err = buildGtfsDB(config, isLocalFile, "")
+			if err != nil {
+				if attempt < maxAttempts {
+					delay := backoffs[attempt-1]
+					logging.LogError(logger, fmt.Sprintf("Failed to build GTFS database (attempt %d/%d). Retrying in %v...", attempt, maxAttempts, delay), err)
+					time.Sleep(delay)
+					continue
+				}
+				return nil, fmt.Errorf("failed to build GTFS database after %d attempts: %w", maxAttempts, err)
+			}
+		}
+
+		// Both loads succeeded, break out of the retry loop
+		break
 	}
 
 	manager := &Manager{
@@ -98,11 +136,6 @@ func InitGTFSManager(config Config) (*Manager, error) {
 		feedVehicleLastSeen:            make(map[string]map[string]time.Time),
 	}
 	manager.setStaticGTFS(staticData)
-
-	gtfsDB, err := buildGtfsDB(config, isLocalFile, "")
-	if err != nil {
-		return nil, fmt.Errorf("error building GTFS database: %w", err)
-	}
 	manager.GtfsDB = gtfsDB
 
 	// Populate systemETag from import metadata
